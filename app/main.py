@@ -5,9 +5,6 @@ from typing import Literal
 import xmltodict
 from pydantic import BaseModel, Field, model_validator
 
-data = xmltodict.parse(open("./path").read())
-testsuite = data["testsuites"]["testsuite"]
-
 
 # TODO: annotate this as final
 class TestResult(BaseModel):
@@ -19,16 +16,34 @@ class TestResult(BaseModel):
     @classmethod
     def set_result(cls, value: dict):
         if (skipped_field := value.get("skipped")) is not None:
-            if skipped_field.get("@message") == "unconditional skip":
-                value["result"] = "skipped_unconditional"
-            elif skipped_field.get("@type") == "pytest.xfail":
+            if skipped_field.get("@type") == "pytest.xfail":
                 value["result"] = "xfail"
             else:
-                # TODO: how does a conditional skip look in junit
-                value["result"] = "skipped_conditional"
-        if (_ := value.get("failure")) is not None:
+                value["result"] = "skipped"
+        elif (_ := value.get("failure")) is not None:
             value["result"] = "fail"
-        # TOOD: xpass
+        elif (
+            value.get("properties") is not None
+            and (properties := value.get("properties", {}).get("property")) is not None
+        ):
+            if isinstance(properties, list):
+                for property in properties:
+                    if (
+                        property.get("@name") == "xfail"
+                        and property.get("@value") == "True"
+                    ):
+                        value["result"] = "xpass"
+                        break
+            elif isinstance(properties, dict):
+                if (
+                    properties.get("@name") == "xfail"
+                    and properties.get("@value") == "True"
+                ):
+                    value["result"] = "xpass"
+
+            else:
+                raise ValueError("what's going on here?")
+
         return value
 
     result: Literal[
@@ -37,8 +52,7 @@ class TestResult(BaseModel):
         "error",
         "xfail",
         "xpass",
-        "skipped_unconditional",
-        "skipped_conditional",
+        "skipped",
     ] = Field(default="pass", validate_default=True)
 
 
@@ -52,6 +66,10 @@ class SuiteResult(BaseModel):
 
     tests: list[TestResult] = Field(alias="testcase")
 
+
+data = xmltodict.parse(open("./path").read())
+testsuite = data["testsuites"]["testsuite"]
+print(data)
 
 result = SuiteResult(**testsuite)
 print(result)
