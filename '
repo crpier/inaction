@@ -1,0 +1,53 @@
+from datetime import datetime
+from pprint import pprint as print
+from typing import Literal
+
+import xmltodict
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+
+data = xmltodict.parse(open("./path").read())
+testsuite = data["testsuites"]["testsuite"]
+
+
+class TestResult(BaseModel):
+    name: str = Field(alias="@name")
+    full_name: str = Field(alias="@classname")
+    time: float = Field(alias="@time")
+
+    @field_validator("result", mode="before")
+    @classmethod
+    def set_result(cls, value: str, info: ValidationInfo):
+        import pdb; pdb.set_trace()
+        if skipped_field := value.get("skipped") is not None:
+            if skipped_field.get("message") == "unconditional skip":
+                return "skipped_unconditional"
+            else:
+                # TODO: how does a conditional skip look in junit
+                return ("skipped conditional",)
+
+    result: Literal[
+        "pass",
+        "fail",
+        "error",
+        "xfail",
+        "xpass",
+        "skipped_unconditional",
+        "skipped conditional",
+    ]
+
+
+class SuiteResult(BaseModel):
+    total_tests: int = Field(alias="@tests")
+    errors: int = Field(alias="@errors")
+    failures: int = Field(alias="@failures")
+    skipped: int = Field(alias="@skipped")
+    duration: float = Field(alias="@time")
+    start_time: datetime = Field(alias="@timestamp")
+
+    tests: list[TestResult] = Field(alias="testcase")
+
+
+result = SuiteResult(**testsuite)
+print(result)
+for case in result.tests:
+    print(case)

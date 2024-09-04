@@ -1,0 +1,15 @@
+[project]
+name = "inaction"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.8.2",
+    "xmltodict>=0.13.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3.2",
+]
