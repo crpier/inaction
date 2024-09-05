@@ -1,23 +1,20 @@
-import sys
+import hashlib
+import json
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, cast
 
 import xmltodict
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from result import Err, Ok, as_result
+from sqlalchemy.engine import Dialect, Engine
 from sqlalchemy.types import TEXT, TypeDecorator
-from typing_extensions import TypeIs
+from sqlmodel import Field as SQLField
+from sqlmodel import Session, SQLModel, create_engine, select
 
-T = TypeVar("T")
-
-type Result[T] = T | Exception
-
-
-def result_todo() -> Result[Any]:
-    raise NotImplementedError
+DATA_DIR = Path("./data")
 
 
 # TODO: annotate this as final
@@ -81,77 +78,92 @@ class SuiteReport(BaseModel):
     tests: list[TestResult] = Field(alias="testcase")
 
 
-def parse_pytest_junit_xml(file_path: Path) -> Result[SuiteReport]:
-    try:
-        with file_path.open() as f:
-            data = xmltodict.parse(f.read())
+@as_result(Exception)
+def parse_pytest_junit_xml(file_path: Path) -> SuiteReport:
+    with file_path.open() as f:
+        data = xmltodict.parse(f.read())
 
-        testsuite = data["testsuites"]["testsuite"]
+    testsuite = data["testsuites"]["testsuite"]
 
-        return SuiteReport(**testsuite)
-    except Exception as e:
-        return e
-
-
-class Base(DeclarativeBase): ...
+    return SuiteReport(**testsuite)
 
 
 class PathType(TypeDecorator):
     impl = TEXT
 
-    def process_bind_param(self, value, dialect):
-        """Convert Path to string before saving to the database."""
+    def process_bind_param(self, value: Any, _: Dialect):  # type: ignore
         if isinstance(value, Path):
             return str(value)
         return value
 
-    def process_result_value(self, value, dialect):
-        """Convert string back to Path after loading from the database."""
+    def process_result_value(self, value: str | None, _: Dialect):  # type: ignore
         if value is not None:
             return Path(value)
         return value
 
 
-class Report(Base):
-    __tablename__ = "reports"
+class Report(SQLModel, table=True):
+    id: int | None = SQLField(default=None, primary_key=True)
+    path: Path = SQLField(sa_type=PathType)
+    # path: Path = mapped_column(PathType)
+    created_at: datetime = SQLField(default_factory=datetime.now)
+    # created_at: datetime = mapped_column(default=datetime.now)
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    path: Mapped[Path] = mapped_column(PathType)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+
+@lru_cache
+def get_db_engine() -> Engine:
+    engine = create_engine("sqlite:///dev.db")
+    SQLModel.metadata.create_all(engine)
+    return engine
 
 
-def store_report(report: SuiteReport) -> Result[None]:
-    try:
-        engine = create_engine("sqlite:///dev.db")
-        Session = sessionmaker(bind=engine)
-        session = Session()
-        Base.metadata.create_all(engine)
+@as_result(Exception)
+def store_report(report: SuiteReport) -> None:
+    data = report.model_dump_json()
+    hash_obj = hashlib.sha1(data.encode()).hexdigest()
+    path_dir = DATA_DIR / hash_obj[0] / hash_obj[1]
+    path_dir.mkdir(parents=True, exist_ok=True)
+    path = path_dir / hash_obj[2:]
+    if path.exists():
+        msg = f"Atteempting to overwrite file at {path}. Aborting..."
+        raise ValueError(msg)
+    with path.open("w") as f:
+        f.write(data)
 
-        new_entry = Report(path=Path("./reports_i_guess"))
+    engine = get_db_engine()
+    with Session(engine) as session:
+        new_entry = Report(path=path)
+        # TODO: handle case when this failed after the data file was created
         session.add(new_entry)
         session.commit()
         session.close()
-    except Exception as err:
-        return err
-
-    return None
 
 
-def is_error(res: Result[Any]) -> TypeIs[Exception]:
-    if isinstance(res, Exception):
-        return True
-    return False
+def store_new_report():
+    input_path = Path("./path")
+    report_result = parse_pytest_junit_xml(input_path).and_then(store_report)
+
+    match report_result:
+        case Ok(_):
+            logger.info("Successfully stored report")
+        case Err(err):
+            logger.error("something failed: {}", err)
 
 
-input_path = Path("./path")
+def print_first_report():
+    engine = get_db_engine()
+    with Session(engine) as session:
+        report = cast(Report, session.exec(select(Report)).one())
+
+    raw_report = json.load(report.path.open())
+    test_result = SuiteReport.model_construct(**raw_report)
+    logger.info(test_result)
 
 
-if is_error(result := parse_pytest_junit_xml(input_path)):
-    logger.error("Couldn't take suite results: {}", result)
-    sys.exit(1)
+def main():
+    store_new_report()
+    print_first_report()
 
-if is_error(store_result := store_report(result)):
-    logger.error("Couldn't take suite results: {}", store_result)
-    sys.exit(1)
 
-logger.info("Done!")
+if __name__ == "__main__":
+    main()

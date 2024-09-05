@@ -8,10 +8,12 @@ dependencies = [
     "pydantic>=2.8.2",
     "xmltodict>=0.13.0",
     "types-xmltodict>=0.13.0.3",
-    "sqlalchemy>=2.0.34",
+    "sqlalchemy[mypy]>=2.0.34",
     "types-sqlalchemy>=1.4.53.38",
     "typing-extensions>=4.12.2",
     "loguru>=0.7.2",
+    "result",
+    "sqlmodel>=0.0.22",
 ]
 
 [tool.setuptools.packages.find]
@@ -21,6 +23,9 @@ where = ["app"]
 dev-dependencies = [
     "pytest>=8.3.2",
 ]
+
+[tool.uv.sources]
+result = { git = "https://github.com/rustedpy/result" }
 
 [tool.mypy]
 enable_incomplete_feature=["NewGenericSyntax"]
