@@ -1,16 +1,46 @@
 import asyncio
 from pathlib import Path
-from textwrap import dedent
-from typing import Literal, cast
+from typing import Any, Final, Literal, Mapping, TypeVar, cast
 
+import aiosqlite
 from aiosqlite import connect
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 from app.utils import camel_to_snake
 
 DATA_DIR = Path("./data")
 
 type SQLiteDSN = Path | Literal[":memory:"]
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class Model:
+    rowid: int | None = None
+
+    def __init__(self, rowid: int | None = None):
+        self.rowid: Final[int | None] = rowid
+
+
+python_to_sqlite_type: dict[type, str] = {
+    int: "INTEGER",
+    str: "TEXT",
+}
+
+
+def model_to_insert_statement(model: BaseModel) -> tuple[str, dict[str, Any]]:
+    table_name = camel_to_snake(model.__class__.__name__)
+    params = {
+        name: getattr(model, name)
+        for name in model.model_fields.keys()
+        if name != "rowid"
+    }
+    stmt = (
+        f"INSERT INTO {table_name} ({', '.join([f'"{name}"' for name in params.keys()])}) "
+        f"VALUES ({', '.join(f":{name}" for name in params.keys())})"
+    )
+    return stmt, params
 
 
 class SQLiteSession:
@@ -21,8 +51,34 @@ class SQLiteSession:
     async def __aenter__(self):
         if self._initialized is False:
             self._session = await self._session
+            self._session.row_factory = aiosqlite.Row
             self._initialized = True
-        return self._session
+        return self
+
+    def execute(self, sql: str, parameters: Mapping[str, Any] | None = None):
+        if parameters is None:
+            return self._session.execute(sql)
+        else:
+            return self._session.execute(sql, parameters)
+
+    def commit(self):
+        return self._session.commit()
+
+    async def add(self, model: BaseModel):
+        stmt, params = model_to_insert_statement(model)
+        await self.execute(stmt, params)
+
+    async def select_all(self, model: type[T]) -> list[T]:
+        column_names = [name for name in model.model_fields.keys()]
+        column_names.append("rowid")
+        column_names = ", ".join(column_names)
+        stmt = f"SELECT {column_names} FROM {camel_to_snake(model.__name__)}"
+        results = []
+        async with self.execute(stmt) as cursor:
+            async for row in cursor:
+                # When I do just **row, I get "got multiple values for keyword argument 'rowid'"
+                results.append(model(**dict(row)))
+        return results
 
     # TODO: annotate and handle exceptions
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -68,12 +124,22 @@ class ConnectionManager:
 
     def _generate_create_table_statement(self, schema: type[BaseModel]):
         table_name = camel_to_snake(schema.__name__)
+        create_statement = f"CREATE TABLE {table_name} (\n"
+        for field_name, field in schema.model_fields.items():
+            if field_name == "rowid":
+                continue
+            create_statement += self._get_field_create_statement(field_name, field)
         # TODO: ensure this is safe
-        return dedent(f"""
-            CREATE TABLE {table_name} (
-                id INTEGER
+        create_statement = create_statement.rstrip(",\n")
+        create_statement += "\n)"
+        return create_statement
+
+    def _get_field_create_statement(self, field_name: str, field: FieldInfo) -> str:
+        if field.annotation is None:
+            raise NotImplementedError(
+                "Fields without type annotations are not supported"
             )
-        """)
+        return f"{field_name} {python_to_sqlite_type[field.annotation]},\n"
 
 
 async def main():
