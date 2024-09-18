@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from typing import Any, Final, Literal, Mapping, TypeVar, cast
+from typing import Any, AsyncGenerator, Final, Literal, Mapping, TypeVar, cast
 
 import aiosqlite
 from aiosqlite import connect
@@ -64,9 +64,12 @@ class SQLiteSession:
     def commit(self):
         return self._session.commit()
 
-    async def add(self, model: BaseModel):
-        stmt, params = model_to_insert_statement(model)
-        await self.execute(stmt, params)
+    async def add(self, data_to_add: T | list[T]):
+        if not isinstance(data_to_add, list):
+            data_to_add = [data_to_add]
+        for obj in data_to_add:
+            stmt, params = model_to_insert_statement(obj)
+            await self.execute(stmt, params)
 
     async def select_all(self, model: type[T]) -> list[T]:
         column_names = [name for name in model.model_fields.keys()]
@@ -79,6 +82,16 @@ class SQLiteSession:
                 # When I do just **row, I get "got multiple values for keyword argument 'rowid'"
                 results.append(model(**dict(row)))
         return results
+
+    async def select(self, model: type[T]) -> AsyncGenerator[T, None]:
+        column_names = [name for name in model.model_fields.keys()]
+        column_names.append("rowid")
+        column_names = ", ".join(column_names)
+        stmt = f"SELECT {column_names} FROM {camel_to_snake(model.__name__)}"
+        async with self.execute(stmt) as cursor:
+            async for row in cursor:
+                # When I do just **row, I get "got multiple values for keyword argument 'rowid'"
+                yield model(**dict(row))
 
     # TODO: annotate and handle exceptions
     async def __aexit__(self, exc_type, exc_val, exc_tb):

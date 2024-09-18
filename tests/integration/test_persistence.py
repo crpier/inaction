@@ -93,3 +93,38 @@ async def test_select_from_table():
     assert result.power_level == added_obj.power_level
     assert result.name == added_obj.name
     assert result.rowid == 1
+
+
+@test_async()
+async def test_insert_list():
+    connection = await load_fixture_async(init_connection)
+    await load_fixture_async(load_schema)
+
+    added_objects = [TestModel(power_level=i, name="test") for i in range(1, 11)]
+    async with connection.session() as s:
+        await s.add(added_objects)
+        await s.commit()
+
+    async with connection.session() as s:
+        i = 0
+        async for result in s.select(TestModel):
+            i += 1
+            assert result == TestModel(power_level=i, name="test", rowid=i)
+
+
+@test_async()
+async def test_select_generator():
+    connection = await load_fixture_async(init_connection)
+    await load_fixture_async(load_schema)
+
+    added_objects = [TestModel(power_level=i, name="test") for i in range(1, 11)]
+    async with connection.session() as s:
+        for obj in added_objects:
+            await s.add(obj)
+        await s.commit()
+
+    async with connection.session() as s:
+        i = 0
+        async for result in s.select(TestModel):
+            i += 1
+            assert result == TestModel(power_level=i, name="test", rowid=i)
