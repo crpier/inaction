@@ -1,6 +1,7 @@
 import asyncio
+from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Any, AsyncGenerator, Final, Literal, Mapping, TypeVar, cast
+from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
 import aiosqlite
 from aiosqlite import connect
@@ -15,6 +16,8 @@ type SQLiteDSN = Path | Literal[":memory:"]
 
 T = TypeVar("T", bound=BaseModel)
 
+# TODO: query type, that has cleaner in constructor
+
 
 class Model:
     rowid: int | None = None
@@ -23,22 +26,73 @@ class Model:
         self.rowid: Final[int | None] = rowid
 
 
-python_to_sqlite_type: dict[type, str] = {
-    int: "INTEGER",
-    str: "TEXT",
-}
+python_to_sqlite_types: dict[type, type["Column"]] = {}
+
+
+# TODO: make sqlite strict on startup
+class Column(Protocol):
+    PYTHON_TYPE: type
+    SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"]
+
+    def __init_subclass__(cls) -> None:
+        python_to_sqlite_types[cls.PYTHON_TYPE] = cls
+        return super().__init_subclass__()
+
+    @staticmethod
+    def to_sqlite_type(value: Any) -> str | int | float | bytes:
+        raise NotImplementedError
+
+    # Not sure you'd want this since Pydantic will handle validation
+    # @staticmethod
+    # def from_sqlite_type(value: str | int | float | bytes) -> Any:
+    #     raise NotImplementedError
+
+
+class IntegerColumn(Column):
+    PYTHON_TYPE = int
+    SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"] = "INTEGER"
+
+    @staticmethod
+    def to_sqlite_type(value: Any) -> int:
+        return value
+
+
+class TextColumn(Column):
+    PYTHON_TYPE = str
+    SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"] = "TEXT"
+
+    @staticmethod
+    def to_sqlite_type(value: Any) -> str:
+        return value
+
+
+class PathColumn(Column):
+    PYTHON_TYPE = Path
+    SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"] = "TEXT"
+
+    @staticmethod
+    def to_sqlite_type(value: Path) -> str:
+        return str(value)
 
 
 def model_to_insert_statement(model: BaseModel) -> tuple[str, dict[str, Any]]:
     table_name = camel_to_snake(model.__class__.__name__)
-    params = {
-        name: getattr(model, name)
-        for name in model.model_fields.keys()
-        if name != "rowid"
-    }
+    params: dict[str, Any] = {}
+    for name, field in model.model_fields.items():
+        if name == "rowid":
+            continue
+        if field.annotation is None:
+            raise NotImplementedError(
+                "Fields without type annotations are not supported"
+            )
+        column_class = python_to_sqlite_types[field.annotation]
+        raw_value = getattr(model, name)
+        value = column_class.to_sqlite_type(raw_value)
+        params[name] = value
+
     stmt = (
-        f"INSERT INTO {table_name} ({', '.join([f'"{name}"' for name in params.keys()])}) "
-        f"VALUES ({', '.join(f":{name}" for name in params.keys())})"
+        f"INSERT INTO {table_name} ({', '.join([f'"{name}"' for name in params])}) "
+        f"VALUES ({', '.join(f":{name}" for name in params)})"
     )
     return stmt, params
 
@@ -58,8 +112,7 @@ class SQLiteSession:
     def execute(self, sql: str, parameters: Mapping[str, Any] | None = None):
         if parameters is None:
             return self._session.execute(sql)
-        else:
-            return self._session.execute(sql, parameters)
+        return self._session.execute(sql, parameters)
 
     def commit(self):
         return self._session.commit()
@@ -97,7 +150,6 @@ class SQLiteSession:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Simply commit"""
         await self._session.commit()
-        pass
 
     async def close(self):
         await self._session.close()
@@ -152,7 +204,8 @@ class ConnectionManager:
             raise NotImplementedError(
                 "Fields without type annotations are not supported"
             )
-        return f"{field_name} {python_to_sqlite_type[field.annotation]},\n"
+        sqlite_type = python_to_sqlite_types[field.annotation].SQLITE_TYPE
+        return f"{field_name} {sqlite_type},\n"
 
 
 async def main():
