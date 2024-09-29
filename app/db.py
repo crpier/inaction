@@ -1,11 +1,13 @@
 import asyncio
+from datetime import datetime
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, TypeVar, cast
+from typing import Annotated, Any, Final, Literal, Protocol, TypeVar, cast
 
 import aiosqlite
 from aiosqlite import connect
 from pydantic import BaseModel
+from pydantic.types import Json
 from pydantic.fields import FieldInfo
 
 from app.utils import camel_to_snake
@@ -31,7 +33,7 @@ python_to_sqlite_types: dict[type, type["Column"]] = {}
 
 # TODO: make sqlite strict on startup
 class Column(Protocol):
-    PYTHON_TYPE: type
+    PYTHON_TYPE: Any
     SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"]
 
     def __init_subclass__(cls) -> None:
@@ -74,6 +76,22 @@ class PathColumn(Column):
     def to_sqlite_type(value: Path) -> str:
         return str(value)
 
+class DateTimeColumn(Column):
+    PYTHON_TYPE = datetime
+    SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"] = "TEXT"
+
+    @staticmethod
+    # TODO: is there any static validation I can do for the type of the value param?
+    def to_sqlite_type(value: datetime) -> str:
+        return value.isoformat()
+
+class JsonColumn(Column):
+    PYTHON_TYPE = Json
+    SQLITE_TYPE: Literal["INTEGER", "REAL", "TEXT", "BLOB"] = "TEXT"
+
+    @staticmethod
+    def to_sqlite_type(value: Json) -> str:
+        return str(value)
 
 def model_to_insert_statement(model: BaseModel) -> tuple[str, dict[str, Any]]:
     table_name = camel_to_snake(model.__class__.__name__)
